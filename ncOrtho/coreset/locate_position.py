@@ -16,7 +16,7 @@ def no_synteny_possible(mirna, chrom, start, end, reference):
         print(
             f'WARNING: No protein-coding genes found on contig "{chrom}". '
             'Make sure that the contig identifiers of the miRNA input file '
-            'match the ones in the reference annotation file'
+            'match the ones in the reference annotation file', flush=True
         )
         return True
     # case 2): miRNA is located left of the first gene and hence has no left
@@ -25,7 +25,7 @@ def no_synteny_possible(mirna, chrom, start, end, reference):
     elif end < firstgene_start:
         print(
             f'There is no left neighbor of {mirna}, since it is located at the start of contig {chrom}\n'
-            f'{firstgene_info[0]} is the right neighbor of {mirna}'
+            f'{firstgene_info[0]} is the right neighbor of {mirna}', flush=True
         )
         return True
     # case 3): miRNA is located right to the last gene, so the last gene is the
@@ -33,7 +33,7 @@ def no_synteny_possible(mirna, chrom, start, end, reference):
     elif start > lastgene_end:
         print(
             f'There is no right neighbor of {mirna}, since it is located at the end of contig {chrom}\n'
-            f'{lastgene_info[0]} is the left neighbor of {mirna}')
+            f'{lastgene_info[0]} is the left neighbor of {mirna}', flush=True)
         return True
     else:
         return False
@@ -72,6 +72,11 @@ def neighbor_search(leftgene, rightgene, core_dict, gene_position, chromdict, no
             return core_orthologs
         else:
             for index in range(1, next_orthos):
+                if position - index < 1:
+                    continue
+                if position + index > len(chromd):
+                    continue
+
                 if typ == 'left':
                     nextgeneinfo = chromd[position - index]
                 else:
@@ -114,7 +119,7 @@ def categorize_mirna_position(
     solved = False
     core_orthologs = []
     if no_synteny_possible(mirna, mirna_chrom, mirna_start, mirna_end, reference):
-        return solved
+        return solved, syntenytype
 
     # case 4): miRNA is located either between two genes or overlapping with (an
     # intron of) a gene, either on the same or the opposite strand
@@ -144,7 +149,10 @@ def categorize_mirna_position(
             rightneighborinfo = reference[mirna_chrom][position + 1]
             rightneighbor = rightneighborinfo[0]
             rn_start = rightneighborinfo[1]
-            if gene_end < mirna_start and rn_start > mirna_end:
+            rn_end = rightneighborinfo[2]
+
+            # if gene_end < mirna_start and rn_start > mirna_end:
+            if gene_start <= mirna_start and rn_end >= mirna_end:
                 syntenytype = 'in-between'
                 solved = True
                 vprint(f'{gene} is the left neighbor of {mirna}, {rightneighbor} is the right neighbor', v)

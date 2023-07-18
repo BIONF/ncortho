@@ -30,33 +30,25 @@ import argparse
 import multiprocessing as mp
 import os
 import sys
-import shutil
+from pyfiglet import Figlet
+from importlib.metadata import version
 
 try:
-    from createcm import CmConstructor
+    from createcm import create_cm, create_phmm
     from core_reblast import blastsearch
     from locate_position import categorize_mirna_position
     from synteny import analyze_synteny
     import coreset_utils as cu
 except ModuleNotFoundError:
-    from ncOrtho.coreset.createcm import CmConstructor
+    from ncOrtho.coreset.createcm import create_cm, create_phmm
     from ncOrtho.coreset.core_reblast import blastsearch
-    from ncOrtho.coreset.synteny import analyze_synteny
     from ncOrtho.coreset.locate_position import categorize_mirna_position
+    from ncOrtho.coreset.synteny import analyze_synteny
     import ncOrtho.coreset.coreset_utils as cu
 
 
 ###############################################################################
 def main():
-    # Print header
-    print('\n' + '#' * 43, flush=True)
-    print('###' + ' ' * 37 + '###', flush=True)
-    print('###   ncOrtho - core set construction   ###', flush=True)
-    print('###' + ' ' * 37 + '###', flush=True)
-    print('#' * 43 + '\n', flush=True)
-
-    # Parse command-line arguments
-    # Define global variables
     parser = argparse.ArgumentParser(
         description=(
             'Build Covariance models of reference miRNAs from core set of orthologs.'
@@ -104,7 +96,21 @@ def main():
         help='set to "no" if you only want to create the alignment. (Default: yes)', nargs='?',
         const='yes', default='yes'
     )
-    #
+    optional.add_argument(
+        '--phmm', metavar='yes/no', type=str,
+        help='set to "yes" if you want to create a pHMM instead of a CM (Default: no)', nargs='?',
+        const='no', default='no'
+    )
+    optional.add_argument(
+        '--rcoffee', metavar='yes/no', type=str,
+        help='set to "no" to use default "t_coffee" instead of "r_coffee" (Default: yes)', nargs='?',
+        const='yes', default='yes'
+    )
+    optional.add_argument(
+        '--redo', metavar='yes/no', type=str,
+        help='set to "no" to reuse models found at output destination (Default: yes)', nargs='?',
+        const='yes', default='yes'
+    )
     optional.add_argument(
         '--idtype', metavar='str', type=str,
         help='Choose the ID in the reference gff file that is '
@@ -124,6 +130,11 @@ def main():
         nargs='?', const='no', default='no'
     )
 
+    # print header
+    custom_fig = Figlet(font='stop')
+    print(custom_fig.renderText('ncOrtho')[:-3], flush=True)
+    v = version('ncOrtho')
+    print(f'Version: {v}\n', flush=True)
     ###############################################################################
 
     # Show help when no arguments are added.
@@ -141,7 +152,9 @@ def main():
         cpu = args.threads
 
     # parse mandatory arguments
-    output = args.output
+    output = os.path.realpath(args.output)
+    if not os.path.isdir(output):
+        os.mkdir(output)
 
     # parse optional arguments
     # mgi = args.mgi
@@ -169,7 +182,7 @@ def main():
     # create directory for intermediate files
     tmpout = f'{output}/tmp'
     if not os.path.isdir(tmpout):
-        os.makedirs(tmpout)
+        os.mkdir(tmpout)
 
     print('# Reading pairwise orthologs', flush=True)
     if args.idtype == 'CDS':
@@ -191,11 +204,11 @@ def main():
             mirid, chromo, start, end, strand, ref_dict, ortho_dict, add_pos_orthos, verbose
         )
         if not syntype:
-            print(f'Warning: Could not localize {mirid}')
+            print(f'Warning: Could not localize {mirid}', flush=True)
             continue
         mirna_positions[mirid] = (syntype, core_orthos)
 
-    print('### Identifying syntenic regions in core species', flush=True)
+    print('\n### Identifying syntenic regions in core species', flush=True)
     syntenyregion_per_mirna = analyze_synteny(core_dict, mirna_positions, tmpout, args.idtype, args.mgi, verbose)
 
     if not syntenyregion_per_mirna:
@@ -204,7 +217,7 @@ def main():
     for mirid, fastalist in syntenyregion_per_mirna.items():
         if not fastalist:
             print(f'Warning: No syntenic region found in any core species for {mirid}. '
-                  f'Make sure that the IDs in the annotation file match the ones in the orthologs file')
+                  f'Make sure that the IDs in the annotation file match the ones in the orthologs file', flush=True)
             continue
         miroutdir = f'{tmpout}/{mirid}'
         if not os.path.isdir(miroutdir):
@@ -214,23 +227,27 @@ def main():
                 of.write(line)
 
     #################################################################################################
-    print('\n### Starting Ortholog search')
+    print('\n### Collecting core orthologs and training models', flush=True)
     for mirna in mirnas:
         mirid = mirna[0]
-        sto_path = blastsearch(mirna, ref_paths['genome'], tmpout, cpu, dust, verbose)
-        if create_model == 'yes' and sto_path is not None:
+        sto_path = blastsearch(mirna, ref_paths['genome'], tmpout, cpu, dust, verbose, args.rcoffee)
+        if create_model == 'no' or sto_path is None:
+            continue
+        if args.phmm == 'no':
             print(f'# Starting to construct covariance model for {mirid}', flush=True)
             model_out = f'{output}/{mirid}.cm'
-            if not os.path.isfile(model_out):
-                # Initiate covariance model construction and calibration.
-                cmc = CmConstructor(sto_path, output, mirid, cpu)
-                # Construct the model.
-                cmc.construct()
-                # Calibrate the model.
-                cmc.calibrate()
-            else:
+            if args.redo == 'no' and not os.path.isfile(model_out):
                 print(f'Model of {mirid} already found at {output}. Nothing done..', flush=True)
-    print('\n### Construction of core set finished')
+                continue
+            create_cm(sto_path, output, mirid, cpu)
+
+        elif args.phmm == 'yes':
+            print(f'# Starting to construct pHMM for {mirid}', flush=True)
+            create_phmm(sto_path, output, mirid, cpu)
+        else:
+            raise ValueError(f'Unknown value "{args.phmm}" for --phmm')
+
+    print('\n### Construction of core set finished', flush=True)
 
 
 if __name__ == '__main__':

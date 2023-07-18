@@ -11,25 +11,34 @@ def vprint(s, verbose):
         print(s, flush=True)
 
 
-def make_alignment(out, mirna, cpu, core):
+def make_alignment(out, mirna, cpu, core, rcoffee):
     alignment = '{}/{}.aln'.format(out, mirna)
     stockholm = '{}/{}.sto'.format(out, mirna)
 
     # Call T-Coffee for the sequence alignment.
     # print('Building T-Coffee alignment.')
-    tc_cmd_1 = (
-        f't_coffee -quiet -multi_core={cpu} -special_mode=rcoffee -in {core} '
-        f'-output=clustalw_aln -outfile={alignment}'
-    )
-    sp.call(tc_cmd_1, shell=True)
+    if rcoffee == 'yes':
+        tc_cmd_1 = (
+            f't_coffee -quiet -multi_core={cpu} -mode=rcoffee -in {core} -output=clustalw_aln -outfile={alignment}'
+        )
+    else:
+        tc_cmd_1 = (
+            f't_coffee -quiet -multi_core={cpu} -in {core} -output=clustalw_aln -outfile={alignment}'
+        )
+    sp.run(tc_cmd_1, shell=True, capture_output=True)
 
     # Extend the sequence-based alignment by structural information.
     # Create Stockholm alignment.
     # print('Adding secondary structure to Stockholm format.')
-    tc_cmd_2 = (
-        f't_coffee -other_pg seq_reformat -in {alignment} -action +add_alifold -output stockholm_aln -out {stockholm}'
-    )
-    sp.call(tc_cmd_2, shell=True)
+    if rcoffee == 'yes':
+        tc_cmd_2 = (
+            f't_coffee -other_pg seq_reformat -in {alignment} -action +add_alifold -output stockholm_aln -out {stockholm}'
+        )
+    else:
+        tc_cmd_2 = (
+            f't_coffee -other_pg seq_reformat -in {alignment} -output stockholm_aln -out {stockholm}'
+        )
+    sp.run(tc_cmd_2, shell=True, capture_output=True)
     return stockholm
 
 
@@ -45,17 +54,18 @@ def maximum_blast_bitscore(mirna, seq, blastdb, c, dust):
     )
     ref_results, err = ref_bit_cmd.communicate(seq)
     if not ref_results:
-        raise ValueError(f'WARNING: Reference sequence of {mirna} not found in reference Genome. '
-              'Consider turning the dust filter off')
+        print(f'WARNING: Reference sequence of {mirna} not found in reference Genome. Setting maximum bitscore to 0', flush=True)
+        return 0.0
     try:
         ref_bit_score = float(ref_results.split('\n')[0].split('\t')[0])
     except ValueError:  # BLASTn errors are in output not in error
-        raise ValueError(ref_results)
+        print(f'WARNING: Reference sequence of {mirna} not found in reference Genome. Setting maximum bitscore to 0', flush=True)
+        return 0.0
     return ref_bit_score
 
 
 # Perform reciprocal BLAST search and construct Stockholm alignment
-def blastsearch(mirna, r_path, o_path, c, dust, v):
+def blastsearch(mirna, r_path, o_path, c, dust, v, coffee):
     """
 
     Parameters
@@ -74,7 +84,7 @@ def blastsearch(mirna, r_path, o_path, c, dust, v):
 
     mirid, rawchrom, mstart, mend, mstrand, rawseq = mirna[:6]
     mchr = rawchrom.replace('chr', '')
-    preseq = rawseq.replace('U', 'T')
+    preseq = rawseq.replace('U', 'T').replace('-', '')
 
     miroutdir = f'{o_path}/{mirid}'
     if not os.path.isdir(miroutdir):
@@ -82,12 +92,12 @@ def blastsearch(mirna, r_path, o_path, c, dust, v):
     synteny_regs = f'{miroutdir}/synteny_regions_{mirid}.fa'  # this fasta file is created by the the main() script
     os.chdir(miroutdir)
 
-    print(f'# {mirid}')
+    print(f'# {mirid}', flush=True)
     if not os.path.isfile(synteny_regs):
         print(f'Warning: No synteny regions found for {mirid}. Training with reference miRNA only.', flush=True)
         with open(synteny_regs, 'w') as fastah:
             fastah.write(f'>{mirid}\n{preseq}\n')
-        stock = make_alignment(miroutdir, mirid, c, synteny_regs)
+        stock = make_alignment(miroutdir, mirid, c, synteny_regs, coffee)
         return stock
 
     # check if blastdb of reference genome exists
@@ -110,7 +120,7 @@ def blastsearch(mirna, r_path, o_path, c, dust, v):
     )
     ortholog_candidates, err = blastn.communicate(preseq)
     if err:
-        raise err
+        raise sp.SubprocessError(err)
 
     # Re-BLAST
     outputcol = {}
@@ -161,5 +171,5 @@ def blastsearch(mirna, r_path, o_path, c, dust, v):
                 outfile.write(f'>{synteny_region}\n{sequence}\n')
         else:
             print(f'Warning: No core orthologs found for {mirid}. Training with reference miRNA only.', flush=True)
-    stock = make_alignment(miroutdir, mirid, c, corefile)
+    stock = make_alignment(miroutdir, mirid, c, corefile, coffee)
     return stock
