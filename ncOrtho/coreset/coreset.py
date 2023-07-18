@@ -32,6 +32,7 @@ import os
 import sys
 from pyfiglet import Figlet
 from importlib.metadata import version
+import shutil
 
 try:
     from createcm import create_cm, create_phmm
@@ -39,12 +40,14 @@ try:
     from locate_position import categorize_mirna_position
     from synteny import analyze_synteny
     import coreset_utils as cu
+    from core_mmseq import coreorthologs_from_mmseq
 except ModuleNotFoundError:
     from ncOrtho.coreset.createcm import create_cm, create_phmm
     from ncOrtho.coreset.core_reblast import blastsearch
     from ncOrtho.coreset.locate_position import categorize_mirna_position
     from ncOrtho.coreset.synteny import analyze_synteny
     import ncOrtho.coreset.coreset_utils as cu
+    from ncOrtho.coreset.core_mmseq import coreorthologs_from_mmseq
 
 
 ###############################################################################
@@ -129,6 +132,27 @@ def main():
         help='Print additional information (Default: no)',
         nargs='?', const='no', default='no'
     )
+    optional.add_argument(
+        '--search', metavar='str', type=str,
+        help='Sequence similarity search program. BLASTn or MMseq2 (Default: BLASTn)',
+        nargs='?', const='BLASTn', default='BLASTn'
+    )
+    optional.add_argument(
+        '--refdb', type=str, metavar='<path>', nargs='?', const='', default='',
+        help=(
+            'Path to BLAST or MMseq2 database of the reference species (recommended when running ncCreate in parallel).'
+            'If using MMseq2, consider to create the database and its index on a local disc (e.g. /tmp/) '
+            'prior to running ncCreate'
+        )
+    )
+    optional.add_argument(
+        '--reblastmode', type=str, metavar='str', nargs='?', const='blastn', default='blastn',
+        help=(
+            'BLASTn mode employed for establishing the reciprocal best hit '
+            'criterion of ortholog candidates in the reference genome. '
+            'Choose between "blastn" (slow and sensitive) and "megablast" (faster but less sensitive) (Default: blastn)'
+        )
+    )
 
     # print header
     custom_fig = Figlet(font='stop')
@@ -167,6 +191,9 @@ def main():
     else:
         raise ValueError(f'Unknown value for "verbose": {args.verbose}')
     add_pos_orthos = args.max_anchor_dist
+
+    if args.reblastmode not in ['blastn', 'megablast']:
+        raise ValueError(f'Unknown BLASTn modus "{args.reblastmode}". Choose "blastn" or "megablast"')
 
     # parameters
     core_dict, ref_paths, all_paths = cu.parse_yaml(args.parameters)
@@ -225,14 +252,28 @@ def main():
         with open(f'{miroutdir}/synteny_regions_{mirid}.fa', 'w') as of:
             for line in fastalist:
                 of.write(line)
+    del syntenyregion_per_mirna  # free memory
 
     #################################################################################################
-    print('\n### Collecting core orthologs and training models', flush=True)
+    print('\n### Reciprocal best hit search to find core orthologs and training models', flush=True)
     for mirna in mirnas:
         mirid = mirna[0]
-        sto_path = blastsearch(mirna, ref_paths['genome'], tmpout, cpu, dust, verbose, args.rcoffee)
-        if create_model == 'no' or sto_path is None:
+        miroutdir = f'{tmpout}/{mirid}'
+
+        if args.search == 'BLASTn':
+            corefile = blastsearch(
+                mirna, args.refdb, ref_paths['genome'], tmpout, cpu, dust, args.reblastmode, verbose
+            )
+        elif args.search == 'MMseq2':
+            corefile = coreorthologs_from_mmseq(mirna, args.refdb, ref_paths['genome'], tmpout, cpu, dust, verbose)
+        else:
+            raise ValueError(f'Unknown search program "{args.search}". Choose between "BLASTn" and "MMseq2"')
+
+        if create_model == 'no':
+            shutil.copy(corefile, output)
             continue
+
+        sto_path = cu.make_alignment(miroutdir, mirid, cpu, corefile, args.rcoffee)
         if args.phmm == 'no':
             print(f'# Starting to construct covariance model for {mirid}', flush=True)
             model_out = f'{output}/{mirid}.cm'
